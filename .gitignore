@@ -1,0 +1,7 @@
+.env
+tools/__pycache__/
+inline.js
+l.html
+md.txt
+*.js
+node_modules/

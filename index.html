@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Squeek Ladder — merge planner for Squeek holders</title>
+<meta name="description" content="Plan and run your Squeek merge ladder: cooldowns, level math and one-click execution. Non-custodial, reads live Sepolia state.">
+<!-- PAGE_TAG: paste exact tag from the SqueekChain verify form here -->
+<style>
+  :root{
+    --bg:#0a0b09; --panel:#111310; --line:#23271f; --ink:#e7ecdf; --dim:#8a9280;
+    --acid:#c8f751; --warn:#ffb454; --dead:#ff6b6b;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:14px;line-height:1.5}
+  a{color:var(--acid);text-decoration:none;border-bottom:1px dotted #3d4a2a}
+  .wrap{max-width:1080px;margin:0 auto;padding:22px 18px 80px}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:14px}
+  .brand{display:flex;align-items:baseline;gap:10px}
+  .brand h1{font-size:18px;margin:0;letter-spacing:.14em;text-transform:uppercase}
+  .brand span{color:var(--dim);font-size:11px;letter-spacing:.22em}
+  .tick{display:flex;gap:14px;font-size:11px;color:var(--dim);flex-wrap:wrap}
+  .tick b{color:var(--ink);font-weight:600}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--acid);margin-right:5px;vertical-align:middle}
+  .dot.idle{background:var(--dim)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .card h2{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+  button{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;background:var(--acid);color:#0a0b09;border:0;border-radius:6px;padding:10px 14px;cursor:pointer}
+  button:disabled{background:#20241c;color:#5b6353;cursor:not-allowed}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  input{font-family:var(--mono);font-size:13px;background:#0c0e0a;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:10px 12px;width:100%}
+  .row{display:flex;gap:8px;margin-top:10px}
+  .row input{flex:1}
+  .kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:12px}
+  .kv .k{color:var(--dim)}
+  .kv .v{text-align:right;font-variant-numeric:tabular-nums}
+  .ladder{display:flex;flex-direction:column-reverse;gap:6px;margin-top:8px}
+  .rung{display:grid;grid-template-columns:56px 1fr 96px;align-items:center;gap:10px;font-size:12px}
+  .rung .lv{color:var(--dim);letter-spacing:.1em}
+  .bar{height:16px;background:#15180f;border:1px solid var(--line);border-radius:3px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#465c22,var(--acid))}
+  .bar.after i{background:linear-gradient(90deg,#1f4a44,#4fd8c4)}
+  .rung .n{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+  .rung .n b{color:var(--ink)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:500;font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{display:inline-block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+  .pill.ok{color:#0a0b09;background:var(--acid);border-color:var(--acid)}
+  .pill.wait{color:var(--warn);border-color:#4a3a1c}
+  .pill.off{color:var(--dead);border-color:#4a2222}
+  #log{max-height:190px;overflow:auto;font-size:11.5px;color:var(--dim);margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+  #log div{margin-bottom:4px;word-break:break-all}
+  #log b{color:var(--ink)}
+  .hint{color:var(--dim);font-size:11px;margin-top:10px}
+  .warnbox{border:1px solid #4a3a1c;background:#171208;color:var(--warn);border-radius:8px;padding:10px 12px;font-size:12px;margin-top:12px;display:none}
+  footer{margin-top:26px;padding-top:14px;border-top:1px solid var(--line);color:var(--dim);font-size:11px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  .stat{font-size:26px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .stat small{font-size:11px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;display:block;margin-top:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>Squeek Ladder</h1>
+      <span>merge planner</span>
+    </div>
+    <div class="tick">
+      <div><span class="dot idle" id="dot"></span><b id="coreState">—</b> core</div>
+      <div>block <b id="coreHeight">—</b></div>
+      <div>round <b id="coreRound">—</b></div>
+      <div>cadence <b id="coreRate">—</b></div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>01 · wallet</h2>
+      <div class="row">
+        <input id="addr" value="0x8346Ac89e4B3297F014050dFe8baf87bF7567e63" placeholder="0x… or connect" spellcheck="false">
+        <button id="load">load</button>
+      </div>
+      <div class="row">
+        <button class="ghost" id="connect">connect wallet</button>
+        <button class="ghost" id="disconnect" style="display:none">disconnect</button>
+      </div>
+      <div class="kv" style="margin-top:14px">
+        <div class="k">address</div><div class="v" id="who">—</div>
+        <div class="k">squeeks held</div><div class="v" id="held">—</div>
+        <div class="k">merge gate</div><div class="v" id="gate">—</div>
+        <div class="k">max level</div><div class="v" id="maxlvl">—</div>
+      </div>
+      <div class="hint">Reads Sepolia directly. No signer needed to plan; connecting only lets you execute.</div>
+    </section>
+
+    <section class="card">
+      <h2>02 · ladder now</h2>
+      <div class="ladder" id="ladderNow"><div class="hint">load a wallet to build the ladder</div></div>
+      <div class="kv" style="margin-top:14px">
+        <div class="k">merge-ready pairs</div><div class="v" id="readyPairs">—</div>
+        <div class="k">moves available now</div><div class="v" id="moves">—</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>03 · planned result</h2>
+      <div class="ladder" id="ladderAfter"><div class="hint">—</div></div>
+      <div class="row" style="margin-top:14px">
+        <button id="run" disabled>run ladder</button>
+        <button class="ghost" id="replan" disabled>re-plan</button>
+      </div>
+      <div class="warnbox" id="warn"></div>
+      <div id="log"></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:14px">
+    <h2>04 · moves</h2>
+    <table>
+      <thead><tr><th>#</th><th>survivor</th><th>donor</th><th>level</th><th>state</th><th class="num">ready at</th><th class="num">eta</th></tr></thead>
+      <tbody id="movesBody"><tr><td colspan="7" style="color:#8a9280">—</td></tr></tbody>
+    </table>
+    <div class="hint" id="planNote"></div>
+  </section>
+
+  <footer>
+    <div>Squeek Ladder · non-custodial · merge() is owner-only, nothing to approve</div>
+    <div id="netinfo">sepolia · 11155111</div>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  const NFT = "0xC4C7982657f00509548F3a3a41db7FA439a6856B";
+  const DEPLOY_BLOCK = 12057556;
+  const RPCS = [
+    "https://sepolia.gateway.tenderly.co",
+    "https://ethereum-sepolia.public.blastapi.io",
+    "https://ethereum-sepolia-rpc.publicnode.com"
+  ];
+  const API_BASE = "https://api.squeekchain.com/v1";
+  const CORE_API = API_BASE + "/status";
+  const MC3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+  const EXPLORER = "https://eth-sepolia.blockscout.com";
+
+  const ABI = [
+    "function balanceOf(address) view returns (uint256)",
+    "function ownerOf(uint256) view returns (address)",
+    "function level(uint256) view returns (uint8)",
+    "function nextMergeHeight(uint256) view returns (uint64)",
+    "function cooldownBlocks(uint8) view returns (uint64)",
+    "function mergesOpen() view returns (bool)",
+    "function MAXIMUM_LEVEL() view returns (uint8)",
+    "function totalIssued() view returns (uint256)",
+    "function merge(uint256 survivor, uint256 donor)"
+  ];
+
+  const MC3_ABI = ["function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[])"];
+  const MC3_IFACE = new ethers.Interface(ABI);
+
+  async function multicall(p, calls) {
+    const mc = new ethers.Contract(MC3, MC3_ABI, p);
+    const out = [];
+    const SIZE = 400;
+    for (let i = 0; i < calls.length; i += SIZE) {
+      const slice = calls.slice(i, i + SIZE);
+      const res = await mc.aggregate3.staticCall(slice.map((c) => ({
+        target: NFT, allowFailure: true, callData: c.data
+      })));
+      res.forEach((r, j) => out.push({ ok: r.success, data: r.returnData, tag: slice[j].tag }));
+    }
+    return out;
+  }
+
+  const $ = (id) => document.getElementById(id);
+  const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "—";
+  const log = (msg, kind) => {
+    const d = document.createElement("div");
+    d.innerHTML = kind === "err" ? `<b style="color:#ff6b6b">${msg}</b>` : msg;
+    $("log").prepend(d);
+  };
+
+  const state = {
+    provider: null, signer: null, account: null,
+    coreHeight: 0, blocksPerMin: 0.137,
+    tokens: [], cooldowns: {}, maxLevel: 0, mergesOpen: false, plan: [], busy: false
+  };
+
+  // ---------- providers ----------
+  async function pickProvider() {
+    for (const url of RPCS) {
+      try {
+        const p = new ethers.JsonRpcProvider(url, 11155111, { staticNetwork: true });
+        await p.getBlockNumber();
+        return p;
+      } catch (e) { /* next */ }
+    }
+    throw new Error("no sepolia RPC reachable");
+  }
+
+  // ---------- core ticker ----------
+  async function loadCore() {
+    try {
+      const r = await fetch(CORE_API, { cache: "no-store" });
+      const d = await r.json();
+      const a = d.builder.anchor;
+      state.coreHeight = Number(a.blockHeight);
+      const rounds = Number(a.settledThroughRound) || 1;
+      // one round = ten minutes; cadence measured from genesis to now
+      state.blocksPerMin = state.coreHeight / (rounds * 10);
+      $("coreHeight").textContent = state.coreHeight.toLocaleString();
+      $("coreRound").textContent = rounds.toLocaleString();
+      $("coreRate").textContent = (state.blocksPerMin * 60).toFixed(1) + "/h";
+      $("coreState").textContent = (d.measurement.coreStatus || "—").toLowerCase();
+      $("dot").className = "dot" + (d.measurement.coreStatus === "IDLE" ? " idle" : "");
+    } catch (e) {
+      $("coreState").textContent = "offline";
+    }
+  }
+
+  // ---------- indexer API (preferred: one paged call, no log scan) ----------
+  async function loadFromApi(addr) {
+    let cursor = null;
+    const tokens = [];
+    let economy = null;
+    for (let page = 0; page < 60; page++) {
+      const u = new URL(API_BASE + "/accounts/" + addr);
+      if (cursor) u.searchParams.set("cursor", cursor);
+      const r = await fetch(u.toString(), { headers: { Accept: "application/json" }, cache: "no-store" });
+      if (!r.ok) throw new Error("indexer " + r.status);
+      const d = await r.json();
+      if (d.status && d.status !== "available") throw new Error("indexer " + d.status);
+      economy = d.economy || economy;
+      for (const t of d.tokens || []) {
+        if (t.custody !== "wallet") continue;
+        tokens.push({ id: Number(t.tokenId), level: Number(t.level), next: Number(t.nextMergeHeight) });
+      }
+      cursor = d.nextCursor;
+      if (!cursor) break;
+    }
+    tokens.sort((a, b) => a.id - b.id);
+    return { tokens, economy };
+  }
+
+  // ---------- token discovery ----------
+  async function scanLogs(topics) {
+    const p = state.provider;
+    const CHUNK = 50000;
+    const acc = [];
+    let from = DEPLOY_BLOCK;
+    while (true) {
+      const head = await p.getBlockNumber();
+      const to = Math.min(from + CHUNK - 1, head - 3);
+      if (to < from) break;
+      let logs = null;
+      for (let attempt = 0; attempt < 3 && logs === null; attempt++) {
+        try {
+          logs = await p.getLogs({ address: NFT, fromBlock: from, toBlock: to, topics });
+        } catch (e) {
+          if (attempt === 2) throw e;
+          await new Promise((r) => setTimeout(r, 700));
+        }
+      }
+      acc.push(...logs);
+      if (to >= head - 3) break;
+      from = to + 1;
+    }
+    return acc;
+  }
+
+  async function tokensOf(owner) {
+    const topic = ethers.id("Transfer(address,address,uint256)");
+    const padded = ethers.zeroPadValue(owner.toLowerCase(), 32);
+    const ids = new Set();
+    for (const l of await scanLogs([topic, null, padded])) ids.add(Number(BigInt(l.topics[3])));
+    const out = new Set();
+    for (const l of await scanLogs([topic, padded, null])) out.add(Number(BigInt(l.topics[3])));
+    const candidates = [...ids].filter((i) => !out.has(i));
+    if (!candidates.length) return [];
+    // verify ownership in one batched call (covers mint→transfer→back cases)
+    const calls = candidates.map((id) => ({
+      tag: id,
+      data: MC3_IFACE.encodeFunctionData("ownerOf", [id])
+    }));
+    const res = await multicall(state.provider, calls);
+    const me = owner.toLowerCase();
+    const verified = [];
+    for (const r of res) {
+      if (!r.ok) continue;
+      try {
+        const [o] = MC3_IFACE.decodeFunctionResult("ownerOf", r.data);
+        if (o.toLowerCase() === me) verified.push(r.tag);
+      } catch (e) { /* skip malformed */ }
+    }
+    return verified.sort((a, b) => a - b);
+  }
+
+  async function loadTokenState(ids) {
+    if (!ids.length) return [];
+    const calls = [];
+    for (const id of ids) {
+      calls.push({ tag: { id, f: "level" }, data: MC3_IFACE.encodeFunctionData("level", [id]) });
+      calls.push({ tag: { id, f: "next" }, data: MC3_IFACE.encodeFunctionData("nextMergeHeight", [id]) });
+    }
+    const res = await multicall(state.provider, calls);
+    const map = new Map();
+    for (const r of res) {
+      const { id, f } = r.tag;
+      if (!map.has(id)) map.set(id, { id, level: 1, next: 0 });
+      if (!r.ok) continue;
+      try {
+        const [v] = MC3_IFACE.decodeFunctionResult(f, r.data);
+        map.get(id)[f === "level" ? "level" : "next"] = Number(v);
+      } catch (e) { /* skip */ }
+    }
+    return ids.map((id) => map.get(id));
+  }
+
+  // ---------- planning ----------
+  function buildPlan(tokens, coreHeight) {
+    // pool of real tokens per level, plus simulated ones produced by merges
+    const pool = new Map();
+    const push = (lvl, t) => {
+      if (!pool.has(lvl)) pool.set(lvl, []);
+      pool.get(lvl).push(t);
+    };
+    for (const t of tokens) {
+      if (t.level >= state.maxLevel) continue;
+      push(t.level, { id: t.id, level: t.level, next: t.next, sim: false });
+    }
+    const plan = [];
+    let seq = 0;
+    for (let lvl = 1; lvl < state.maxLevel; lvl++) {
+      const group = pool.get(lvl) || [];
+      group.sort((a, b) => a.next - b.next || (a.id || 0) - (b.id || 0));
+      while (group.length >= 2) {
+        const survivor = group.shift();
+        const donor = group.shift();
+        const readyAt = Math.max(survivor.next, donor.next);
+        seq++;
+        plan.push({
+          n: seq, survivor: survivor.id, donor: donor.id, level: lvl,
+          survivorSim: survivor.sim, donorSim: donor.sim,
+          readyAt, status: readyAt <= coreHeight ? "ready" : "wait",
+          eta: etaMinutes(readyAt - coreHeight)
+        });
+        const cdB = state.cooldowns[lvl + 1] || 0;
+        const born = Math.max(readyAt, coreHeight) + cdB;
+        if (lvl + 1 < state.maxLevel) {
+          groupPushNext(pool, lvl + 1, { id: null, level: lvl + 1, next: born, sim: true });
+        }
+      }
+      // keep leftovers for display
+      pool.set(lvl, group);
+    }
+    return plan;
+  }
+
+  function groupPushNext(pool, lvl, t) {
+    if (!pool.has(lvl)) pool.set(lvl, []);
+    const arr = pool.get(lvl);
+    arr.push(t);
+    arr.sort((a, b) => a.next - b.next);
+  }
+
+  function etaMinutes(deltaBlocks) {
+    if (deltaBlocks <= 0) return "now";
+    const min = Math.max(1, Math.round(deltaBlocks / Math.max(state.blocksPerMin, 0.01)));
+    if (min < 60) return "~" + min + "m";
+    const h = (min / 60);
+    if (h < 48) return "~" + h.toFixed(1) + "h";
+    return "~" + (h / 24).toFixed(1) + "d";
+  }
+
+  function simulate(tokens, plan) {
+    const counts = new Map();
+    tokens.forEach((t) => counts.set(t.level, (counts.get(t.level) || 0) + 1));
+    const after = new Map(counts);
+    for (const m of plan) {
+      after.set(m.level, Math.max(0, (after.get(m.level) || 0) - 2));
+      const up = m.level + 1;
+      after.set(up, (after.get(up) || 0) + 1);
+    }
+    return { before: counts, after };
+  }
+
+  function renderLadder(el, counts, cls) {
+    const levels = [...counts.keys()].sort((a, b) => a - b);
+    if (!levels.length) { el.innerHTML = '<div class="hint">no squeeks</div>'; return; }
+    const max = Math.max(...counts.values());
+    el.innerHTML = levels.map((l) => {
+      const n = counts.get(l);
+      const w = Math.max(2, Math.round((n / max) * 100));
+      return `<div class="rung"><div class="lv">L${l}</div>
+        <div class="bar ${cls}"><i style="width:${w}%"></i></div>
+        <div class="n"><b>${n}</b></div></div>`;
+    }).join("");
+  }
+
+  function renderMoves(plan) {
+    const body = $("movesBody");
+    if (!plan.length) {
+      body.innerHTML = '<tr><td colspan="7" style="color:#8a9280">no merge moves — every squeek is already at max level or alone on its rung</td></tr>';
+      $("planNote").textContent = "";
+      return;
+    }
+    body.innerHTML = plan.slice(0, 40).map((m) => {
+      const pill = m.status === "ready" ? '<span class="pill ok">ready</span>' : '<span class="pill wait">cooldown</span>';
+      const sid = m.survivor === null || m.survivor === undefined ? "new" : "#" + m.survivor;
+      const did = m.donor === null || m.donor === undefined ? "new" : "#" + m.donor;
+      return `<tr><td>${m.n}</td><td>${sid}</td><td>${did}</td><td>L${m.level}→${m.level + 1}</td>
+        <td>${pill}</td><td class="num">${m.readyAt || 0}</td><td class="num">${m.eta}</td></tr>`;
+    }).join("");
+    const waiting = plan.filter((m) => m.status !== "ready").length;
+    const sim = plan.filter((m) => m.survivorSim || m.donorSim).length;
+    const cadence = (state.blocksPerMin * 60).toFixed(1);
+    $("planNote").textContent = `${plan.length} moves in the full ladder · ${sim} of them consume a squeek created by an earlier move (they run on a later pass). `
+      + (waiting
+        ? `${plan.length - waiting} can run now; the rest unlock as Squeek blocks settle (${cadence} blocks/hour).`
+        : `every current-rung move is executable now.`);
+  }
+
+  // ---------- load ----------
+  async function load(addr) {
+    if (!ethers.isAddress(addr)) { log("not an address", "err"); return; }
+    $("log").innerHTML = "";
+    state.account = addr;
+    $("who").textContent = short(addr);
+    log("reading squeeks for " + short(addr) + " …");
+    try {
+      if (!state.provider) state.provider = await pickProvider();
+
+      let tokens = null;
+      try {
+        const api = await loadFromApi(addr);
+        tokens = api.tokens;
+        if (api.economy) {
+          state.mergesOpen = !!api.economy.mergesOpen;
+          state.maxLevel = Number(api.economy.maximumLevel);
+          state.coreHeight = Number(api.economy.coreBlockHeight) || state.coreHeight;
+          $("coreHeight").textContent = state.coreHeight.toLocaleString();
+        }
+        log("state read from the Squeekchain indexer");
+      } catch (e) {
+        log("indexer unavailable (" + e.message + ") — falling back to chain scan");
+      }
+
+      if (tokens === null) {
+        const c = new ethers.Contract(NFT, ABI, state.provider);
+        const [open, maxLvl] = await Promise.all([c.mergesOpen(), c.MAXIMUM_LEVEL()]);
+        state.mergesOpen = open;
+        state.maxLevel = Number(maxLvl);
+        const ids = await tokensOf(addr);
+        tokens = ids.length ? await loadTokenState(ids) : [];
+      }
+
+      $("gate").innerHTML = state.mergesOpen ? '<span class="pill ok">open</span>' : '<span class="pill off">closed</span>';
+      $("maxlvl").textContent = state.maxLevel;
+      state.tokens = tokens;
+      $("held").textContent = state.tokens.length;
+
+      // cooldown table
+      const cd = {};
+      for (let l = 1; l <= state.maxLevel; l++) {
+        try { cd[l] = Number(await c.cooldownBlocks(l)); } catch { cd[l] = 0; }
+      }
+      state.cooldowns = cd;
+
+      const { before } = simulate(state.tokens, []);
+      renderLadder($("ladderNow"), before, "before");
+
+      replan();
+      log(`<b>${state.tokens.length}</b> squeeks in wallet, gate ${open ? "open" : "closed"}`);
+    } catch (e) {
+      log(String(e.message || e), "err");
+    }
+  }
+
+  function replan() {
+    state.plan = buildPlan(state.tokens, state.coreHeight);
+    const { after } = simulate(state.tokens, state.plan);
+    renderLadder($("ladderAfter"), after, "after");
+    renderMoves(state.plan);
+    const ready = state.plan.filter((m) => m.status === "ready").length;
+    const pairs = new Map();
+    state.tokens.forEach((t) => pairs.set(t.level, (pairs.get(t.level) || 0) + 1));
+    let pairCount = 0;
+    pairs.forEach((n) => { pairCount += Math.floor(n / 2); });
+    $("readyPairs").textContent = pairCount;
+    $("moves").textContent = ready;
+    $("run").disabled = !state.signer || ready === 0 || !state.mergesOpen || state.busy;
+    $("replan").disabled = !state.tokens.length;
+    const warn = $("warn");
+    if (!state.mergesOpen) {
+      warn.style.display = "block";
+      warn.textContent = "Merge gate is closed on-chain. You can plan now; execution unlocks when the admin opens merges.";
+    } else if (!state.signer) {
+      warn.style.display = "block";
+      warn.textContent = "Connect the wallet that owns these Squeeks to execute.";
+    } else {
+      warn.style.display = "none";
+    }
+  }
+
+  // ---------- execute ----------
+  async function runLadder() {
+    state.busy = true;
+    $("run").disabled = true;
+    const c = new ethers.Contract(NFT, ABI, state.signer);
+    let done = 0, failed = 0;
+    for (const m of state.plan.filter((x) => x.status === "ready" && !x.survivorSim && !x.donorSim)) {
+      try {
+        log(`merge #${m.survivor} ← #${m.donor} (L${m.level}→${m.level + 1}) …`);
+        const tx = await c.merge(m.survivor, m.donor);
+        log(`sent <a href="${EXPLORER}/tx/${tx.hash}" target="_blank" rel="noopener">${tx.hash.slice(0, 12)}…</a>`);
+        const rc = await tx.wait();
+        log(`<b>ok</b> block ${rc.blockNumber} · gas ${rc.gasUsed.toString()}`, done);
+        done++;
+      } catch (e) {
+        failed++;
+        const msg = (e.shortMessage || e.message || String(e)).slice(0, 160);
+        log(`failed #${m.survivor}←#${m.donor}: ${msg}`, "err");
+      }
+    }
+    log(`ladder pass finished · ${done} merged · ${failed} failed`);
+    state.busy = false;
+    await loadCore();
+    await load(state.account);
+  }
+
+  // ---------- wallet ----------
+  async function connect() {
+    if (!window.ethereum) { log("no injected wallet found — install or use a read-only address", "err"); return; }
+    try {
+      const browser = new ethers.BrowserProvider(window.ethereum);
+      await browser.send("eth_requestAccounts", []);
+      try {
+        await browser.send("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]);
+      } catch (e) {
+        if (e.code === 4902) {
+          await browser.send("wallet_addEthereumChain", [{
+            chainId: "0xaa36a7", chainName: "Sepolia",
+            nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: [RPCS[0]], blockExplorerUrls: [EXPLORER]
+          }]);
+        }
+      }
+      state.signer = await browser.getSigner();
+      state.provider = new ethers.JsonRpcProvider(RPCS[0], 11155111, { staticNetwork: true });
+      const addr = await state.signer.getAddress();
+      $("addr").value = addr;
+      $("connect").style.display = "none";
+      $("disconnect").style.display = "";
+      await load(addr);
+    } catch (e) {
+      log(String(e.message || e), "err");
+    }
+  }
+
+  // ---------- boot ----------
+  $("load").onclick = () => load($("addr").value.trim());
+  $("addr").addEventListener("keydown", (e) => { if (e.key === "Enter") load($("addr").value.trim()); });
+  $("connect").onclick = connect;
+  $("disconnect").onclick = () => {
+    state.signer = null; state.account = null; state.tokens = []; state.plan = [];
+    $("connect").style.display = ""; $("disconnect").style.display = "none";
+    $("who").textContent = "—"; $("held").textContent = "—";
+    $("ladderNow").innerHTML = '<div class="hint">load a wallet to build the ladder</div>';
+    $("ladderAfter").innerHTML = '<div class="hint">—</div>';
+    $("movesBody").innerHTML = '<tr><td colspan="7" style="color:#8a9280">—</td></tr>';
+    $("run").disabled = true; $("warn").style.display = "none";
+  };
+  $("replan").onclick = replan;
+  $("run").onclick = runLadder;
+
+  pickProvider().then((p) => { state.provider = p; }).catch(() => {});
+  loadCore();
+  setInterval(loadCore, 60000);
+})();
+</script>
+</body>
+</html>
