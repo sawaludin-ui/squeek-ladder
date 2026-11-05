@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Squeek Ladder — merge planner for Squeek holders</title>
-<meta name="description" content="Plan and run your Squeek merge ladder: cooldowns, level math and one-click execution. Non-custodial, reads live Sepolia state.">
-<!-- PAGE_TAG: paste exact tag from the SqueekChain verify form here -->
+<meta name="description" content="Read-only Squeek merge planner: verified wallet inventory, block cooldowns and projected levels. No signing or transactions.">
+<meta name="squeekchain-project" content="502c8855-e4e0-4067-bf83-d2de88597fa3">
 <style>
   :root{
     --bg:#0a0b09; --panel:#111310; --line:#23271f; --ink:#e7ecdf; --dim:#8a9280;
@@ -65,6 +65,7 @@
 <body>
 <div class="wrap">
   <header>
+    <a href="/genesis.html">Genesis Navigator · Aura, badges & next actions →</a>
     <div class="brand">
       <h1>Squeek Ladder</h1>
       <span>merge planner</span>
@@ -85,7 +86,7 @@
         <button id="load">load</button>
       </div>
       <div class="row">
-        <button class="ghost" id="connect">connect wallet</button>
+        <button class="ghost" id="connect">use wallet address</button>
         <button class="ghost" id="disconnect" style="display:none">disconnect</button>
       </div>
       <div class="kv" style="margin-top:14px">
@@ -94,7 +95,7 @@
         <div class="k">merge gate</div><div class="v" id="gate">—</div>
         <div class="k">max level</div><div class="v" id="maxlvl">—</div>
       </div>
-      <div class="hint">Reads Sepolia directly. No signer needed to plan; connecting only lets you execute.</div>
+      <div class="hint">Read-only Sepolia planner. Wallet connection selects an address only; no signing or transactions. Deposited Squeeks are excluded.</div>
     </section>
 
     <section class="card">
@@ -102,7 +103,7 @@
       <div class="ladder" id="ladderNow"><div class="hint">load a wallet to build the ladder</div></div>
       <div class="kv" style="margin-top:14px">
         <div class="k">merge-ready pairs</div><div class="v" id="readyPairs">—</div>
-        <div class="k">moves available now</div><div class="v" id="moves">—</div>
+        <div class="k">eligible at snapshot</div><div class="v" id="moves">—</div>
       </div>
     </section>
 
@@ -110,7 +111,7 @@
       <h2>03 · planned result</h2>
       <div class="ladder" id="ladderAfter"><div class="hint">—</div></div>
       <div class="row" style="margin-top:14px">
-        <button id="run" disabled>run ladder</button>
+        <button id="run" disabled>read-only planner</button>
         <button class="ghost" id="replan" disabled>re-plan</button>
       </div>
       <div class="warnbox" id="warn"></div>
@@ -121,14 +122,14 @@
   <section class="card" style="margin-top:14px">
     <h2>04 · moves</h2>
     <table>
-      <thead><tr><th>#</th><th>survivor</th><th>donor</th><th>level</th><th>state</th><th class="num">ready at</th><th class="num">eta</th></tr></thead>
+      <thead><tr><th>#</th><th>survivor</th><th>donor</th><th>level</th><th>state</th><th class="num">earliest height</th><th class="num">timing</th></tr></thead>
       <tbody id="movesBody"><tr><td colspan="7" style="color:#8a9280">—</td></tr></tbody>
     </table>
     <div class="hint" id="planNote"></div>
   </section>
 
   <footer>
-    <div>Squeek Ladder · non-custodial · merge() is owner-only, nothing to approve</div>
+    <div>Squeek Ladder · read-only · wallet-custody projections only · donor burns permanently</div>
     <div id="netinfo">sepolia · 11155111</div>
   </footer>
 </div>
@@ -137,452 +138,256 @@
 <script>
 (() => {
   "use strict";
-
+  // Read-only. Official Sepolia deployment revision 7 and published NFT/Core ABIs.
+  // https://docs.squeekchain.com/assets/deployments/sepolia.json
+  // Wallet merges: NFT.merge. Deposited merges: Staking.mergeDeposited (outside this planner).
   const NFT = "0xC4C7982657f00509548F3a3a41db7FA439a6856B";
-  const DEPLOY_BLOCK = 12057556;
-  const RPCS = [
-    "https://sepolia.gateway.tenderly.co",
-    "https://ethereum-sepolia.public.blastapi.io",
-    "https://ethereum-sepolia-rpc.publicnode.com"
-  ];
+  const CORE = "0xfd6c166d4b8e2962e65746a13e5a0797cd4de0c4";
+  const DEPLOY_BLOCK = 12057769;
+  const RPCS = ["https://sepolia.gateway.tenderly.co", "https://ethereum-sepolia.public.blastapi.io", "https://ethereum-sepolia-rpc.publicnode.com"];
   const API_BASE = "https://api.squeekchain.com/v1";
-  const CORE_API = API_BASE + "/status";
   const MC3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
-  const EXPLORER = "https://eth-sepolia.blockscout.com";
-
-  const ABI = [
-    "function balanceOf(address) view returns (uint256)",
-    "function ownerOf(uint256) view returns (address)",
-    "function level(uint256) view returns (uint8)",
-    "function nextMergeHeight(uint256) view returns (uint64)",
-    "function cooldownBlocks(uint8) view returns (uint64)",
-    "function mergesOpen() view returns (bool)",
-    "function MAXIMUM_LEVEL() view returns (uint8)",
-    "function totalIssued() view returns (uint256)",
-    "function merge(uint256 survivor, uint256 donor)"
-  ];
-
+  const ABI = ["function balanceOf(address) view returns (uint256)", "function ownerOf(uint256) view returns (address)",
+    "function level(uint256) view returns (uint8)", "function nextMergeHeight(uint256) view returns (uint64)",
+    "function cooldownBlocks(uint8) view returns (uint64)", "function mergesOpen() view returns (bool)",
+    "function MAXIMUM_LEVEL() view returns (uint8)", "function sqkCore() view returns (address)"];
+  const CORE_ABI = ["function state() view returns ((uint64 settledThroughRound,uint64 cumulativeWork,uint96 cumulativeBlockUnits,uint64 blockHeight,uint96 blockProgress,uint32 workPerThousandBlocks,uint256 authorizationNonce,bool paused))"];
   const MC3_ABI = ["function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[])"];
   const MC3_IFACE = new ethers.Interface(ABI);
-
+  const $ = (id) => document.getElementById(id);
+  const short = (a) => a ? a.slice(0,6) + "…" + a.slice(-4) : "—";
+  const state = {provider:null, account:null, tokens:[], cooldowns:{}, maxLevel:0, coreHeight:0,
+    mergesOpen:false, plan:[], busy:false, loaded:false, snapshot:null, version:0};
+  function log(msg, kind) {
+    const d = document.createElement("div");
+    d.textContent = String(msg);
+    if (kind === "err") d.style.color = "#ff6b6b";
+    $("log").prepend(d);
+  }
+  function integer(value, label) {
+    if (!["number","bigint","string"].includes(typeof value) || (typeof value === "string" && !/^\d+$/.test(value))) throw new Error("missing or invalid " + label);
+    const n = Number(value);
+    if (!Number.isSafeInteger(n) || n < 0) throw new Error("invalid " + label);
+    return n;
+  }
+  async function fetchJson(url, options = {}, timeoutMs = 15000) {
+    const controller = new AbortController();
+    let timer;
+    try {
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {controller.abort(); reject(new Error("request timeout"));}, timeoutMs);
+      });
+      return await Promise.race([(async () => {
+        const response = await fetch(url, {...options, signal:controller.signal});
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return await response.json();
+      })(), timeout]);
+    } finally {clearTimeout(timer);}
+  }
+  async function pickProvider() {
+    for (const url of RPCS) {
+      let p;
+      try {
+        const request = new ethers.FetchRequest(url); request.timeout = 15000;
+        // Some public gateways stall batched eth_call; contract multicall still batches token reads.
+        p = new ethers.JsonRpcProvider(request, undefined, {batchMaxCount:1});
+        if (Number((await p.getNetwork()).chainId) !== 11155111) throw new Error("RPC chain mismatch");
+        await p.getBlockNumber(); return p;
+      } catch {if (p) p.destroy();}
+    }
+    throw new Error("no verified Sepolia RPC reachable");
+  }
   async function multicall(p, calls) {
-    const mc = new ethers.Contract(MC3, MC3_ABI, p);
-    const out = [];
-    const SIZE = 400;
-    for (let i = 0; i < calls.length; i += SIZE) {
-      const slice = calls.slice(i, i + SIZE);
-      const res = await mc.aggregate3.staticCall(slice.map((c) => ({
-        target: NFT, allowFailure: true, callData: c.data
-      })));
-      res.forEach((r, j) => out.push({ ok: r.success, data: r.returnData, tag: slice[j].tag }));
+    const mc = new ethers.Contract(MC3, MC3_ABI, p), out = [];
+    for (let i=0; i<calls.length; i+=200) {
+      const slice = calls.slice(i,i+200);
+      const res = await mc.aggregate3.staticCall(slice.map(c=>({target:NFT,allowFailure:true,callData:c.data})), {blockTag:state.snapshot});
+      if (res.length !== slice.length) throw new Error("incomplete multicall response");
+      res.forEach((r,j)=>out.push({ok:r.success,data:r.returnData,tag:slice[j].tag}));
     }
     return out;
   }
-
-  const $ = (id) => document.getElementById(id);
-  const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "—";
-  const log = (msg, kind) => {
-    const d = document.createElement("div");
-    d.innerHTML = kind === "err" ? `<b style="color:#ff6b6b">${msg}</b>` : msg;
-    $("log").prepend(d);
-  };
-
-  const state = {
-    provider: null, signer: null, account: null,
-    coreHeight: 0, blocksPerMin: 0.137,
-    tokens: [], cooldowns: {}, maxLevel: 0, mergesOpen: false, plan: [], busy: false
-  };
-
-  // ---------- providers ----------
-  async function pickProvider() {
-    for (const url of RPCS) {
-      try {
-        const p = new ethers.JsonRpcProvider(url, 11155111, { staticNetwork: true });
-        await p.getBlockNumber();
-        return p;
-      } catch (e) { /* next */ }
-    }
-    throw new Error("no sepolia RPC reachable");
-  }
-
-  // ---------- core ticker ----------
-  async function loadCore() {
-    try {
-      const r = await fetch(CORE_API, { cache: "no-store" });
-      const d = await r.json();
-      const a = d.builder.anchor;
-      state.coreHeight = Number(a.blockHeight);
-      const rounds = Number(a.settledThroughRound) || 1;
-      // one round = ten minutes; cadence measured from genesis to now
-      state.blocksPerMin = state.coreHeight / (rounds * 10);
-      $("coreHeight").textContent = state.coreHeight.toLocaleString();
-      $("coreRound").textContent = rounds.toLocaleString();
-      $("coreRate").textContent = (state.blocksPerMin * 60).toFixed(1) + "/h";
-      $("coreState").textContent = (d.measurement.coreStatus || "—").toLowerCase();
-      $("dot").className = "dot" + (d.measurement.coreStatus === "IDLE" ? " idle" : "");
-    } catch (e) {
-      $("coreState").textContent = "offline";
-    }
-  }
-
-  // ---------- indexer API (preferred: one paged call, no log scan) ----------
   async function loadFromApi(addr) {
     let cursor = null;
-    const tokens = [];
-    let economy = null;
-    for (let page = 0; page < 60; page++) {
-      const u = new URL(API_BASE + "/accounts/" + addr);
-      if (cursor) u.searchParams.set("cursor", cursor);
-      const r = await fetch(u.toString(), { headers: { Accept: "application/json" }, cache: "no-store" });
-      if (!r.ok) throw new Error("indexer " + r.status);
-      const d = await r.json();
-      if (d.status && d.status !== "available") throw new Error("indexer " + d.status);
-      economy = d.economy || economy;
-      for (const t of d.tokens || []) {
-        if (t.custody !== "wallet") continue;
-        tokens.push({ id: Number(t.tokenId), level: Number(t.level), next: Number(t.nextMergeHeight) });
+    const tokens = [], seenIds = new Set(), seenCursors = new Set();
+    for (let page=0; page<60; page++) {
+      const url = new URL(API_BASE + "/accounts/" + addr);
+      if (cursor !== null) url.searchParams.set("cursor",cursor);
+      const d = await fetchJson(url.toString(), {cache:"no-store",headers:{Accept:"application/json"}});
+      if (d.status !== "available" || !Array.isArray(d.tokens)) throw new Error("incomplete indexer response");
+      for (const t of d.tokens) {
+        const id = integer(t.tokenId,"token ID");
+        if (id<1 || seenIds.has(id)) throw new Error("duplicate or invalid token ID");
+        seenIds.add(id);
+        if (t.custody === "wallet") tokens.push({id});
       }
       cursor = d.nextCursor;
-      if (!cursor) break;
+      if (cursor === null || cursor === undefined) return {tokens:tokens.sort((a,b)=>a.id-b.id)};
+      if (typeof cursor !== "string" || !cursor || seenCursors.has(cursor)) throw new Error("invalid or repeated indexer cursor");
+      seenCursors.add(cursor);
     }
-    tokens.sort((a, b) => a.id - b.id);
-    return { tokens, economy };
+    throw new Error("incomplete pagination: page limit reached");
   }
-
-  // ---------- token discovery ----------
   async function scanLogs(topics) {
-    const p = state.provider;
-    const CHUNK = 50000;
-    const acc = [];
-    let from = DEPLOY_BLOCK;
-    while (true) {
-      const head = await p.getBlockNumber();
-      const to = Math.min(from + CHUNK - 1, head - 3);
-      if (to < from) break;
-      let logs = null;
-      for (let attempt = 0; attempt < 3 && logs === null; attempt++) {
-        try {
-          logs = await p.getLogs({ address: NFT, fromBlock: from, toBlock: to, topics });
-        } catch (e) {
-          if (attempt === 2) throw e;
-          await new Promise((r) => setTimeout(r, 700));
-        }
-      }
-      acc.push(...logs);
-      if (to >= head - 3) break;
-      from = to + 1;
+    const logs = [];
+    for (let from=DEPLOY_BLOCK; from<=state.snapshot; from+=50000) {
+      logs.push(...await state.provider.getLogs({address:NFT,fromBlock:from,toBlock:Math.min(from+49999,state.snapshot),topics}));
     }
-    return acc;
+    return logs;
   }
-
   async function tokensOf(owner) {
-    const topic = ethers.id("Transfer(address,address,uint256)");
-    const padded = ethers.zeroPadValue(owner.toLowerCase(), 32);
-    const ids = new Set();
-    for (const l of await scanLogs([topic, null, padded])) ids.add(Number(BigInt(l.topics[3])));
-    const out = new Set();
-    for (const l of await scanLogs([topic, padded, null])) out.add(Number(BigInt(l.topics[3])));
-    const candidates = [...ids].filter((i) => !out.has(i));
-    if (!candidates.length) return [];
-    // verify ownership in one batched call (covers mint→transfer→back cases)
-    const calls = candidates.map((id) => ({
-      tag: id,
-      data: MC3_IFACE.encodeFunctionData("ownerOf", [id])
-    }));
-    const res = await multicall(state.provider, calls);
-    const me = owner.toLowerCase();
-    const verified = [];
+    const incoming = await scanLogs([ethers.id("Transfer(address,address,uint256)"),null,ethers.zeroPadValue(owner.toLowerCase(),32)]);
+    // Never subtract all outbound IDs: an NFT may have transferred back afterwards.
+    const candidates = [...new Set(incoming.map(l=>integer(BigInt(l.topics[3]),"token ID")))];
+    const res = await multicall(state.provider,candidates.map(id=>({tag:id,data:MC3_IFACE.encodeFunctionData("ownerOf",[id])})));
+    const ids = [];
     for (const r of res) {
+      // Burned tokens revert ownerOf. A final balance check detects missing owned tokens.
       if (!r.ok) continue;
-      try {
-        const [o] = MC3_IFACE.decodeFunctionResult("ownerOf", r.data);
-        if (o.toLowerCase() === me) verified.push(r.tag);
-      } catch (e) { /* skip malformed */ }
+      const [actual] = MC3_IFACE.decodeFunctionResult("ownerOf",r.data);
+      if (actual.toLowerCase() === owner.toLowerCase()) ids.push(r.tag);
     }
-    return verified.sort((a, b) => a - b);
+    return ids.sort((a,b)=>a-b);
   }
-
   async function loadTokenState(ids) {
-    if (!ids.length) return [];
-    const calls = [];
-    for (const id of ids) {
-      calls.push({ tag: { id, f: "level" }, data: MC3_IFACE.encodeFunctionData("level", [id]) });
-      calls.push({ tag: { id, f: "next" }, data: MC3_IFACE.encodeFunctionData("nextMergeHeight", [id]) });
+    const calls = ids.flatMap(id=>["ownerOf","level","nextMergeHeight"].map(f=>({tag:{id,f},data:MC3_IFACE.encodeFunctionData(f,[id])})));
+    const rows = new Map(ids.map(id=>[id,{id}]));
+    for (const r of await multicall(state.provider,calls)) {
+      if (!r.ok) throw new Error("token read failed: #"+r.tag.id+" "+r.tag.f);
+      const [value] = MC3_IFACE.decodeFunctionResult(r.tag.f,r.data);
+      const t = rows.get(r.tag.id);
+      if (r.tag.f === "ownerOf") {
+        if (value.toLowerCase() !== state.account.toLowerCase()) throw new Error("ownership mismatch #"+t.id);
+        t.owned = true;
+      } else t[r.tag.f === "level" ? "level" : "next"] = integer(value,r.tag.f);
     }
-    const res = await multicall(state.provider, calls);
-    const map = new Map();
-    for (const r of res) {
-      const { id, f } = r.tag;
-      if (!map.has(id)) map.set(id, { id, level: 1, next: 0 });
-      if (!r.ok) continue;
-      try {
-        const [v] = MC3_IFACE.decodeFunctionResult(f, r.data);
-        map.get(id)[f === "level" ? "level" : "next"] = Number(v);
-      } catch (e) { /* skip */ }
-    }
-    return ids.map((id) => map.get(id));
+    return ids.map(id=>{
+      const t = rows.get(id);
+      if (!t.owned || !t.level || t.level>state.maxLevel || t.next === undefined) throw new Error("incomplete token state");
+      return {id:t.id,level:t.level,next:t.next};
+    });
   }
-
-  // ---------- planning ----------
   function buildPlan(tokens, coreHeight) {
-    // pool of real tokens per level, plus simulated ones produced by merges
-    const pool = new Map();
-    const push = (lvl, t) => {
-      if (!pool.has(lvl)) pool.set(lvl, []);
-      pool.get(lvl).push(t);
-    };
+    integer(coreHeight,"core height");
+    if (!Number.isInteger(state.maxLevel) || state.maxLevel<1 || state.maxLevel>255) throw new Error("invalid maximum level");
+    for (let lvl=2; lvl<state.maxLevel; lvl++) integer(state.cooldowns[lvl],"cooldown L"+lvl);
+    const pool = new Map(), seen = new Set(), plan = [];
+    const push = (lvl,t)=>{if (!pool.has(lvl)) pool.set(lvl,[]); pool.get(lvl).push(t);};
     for (const t of tokens) {
-      if (t.level >= state.maxLevel) continue;
-      push(t.level, { id: t.id, level: t.level, next: t.next, sim: false });
+      if (integer(t.id,"token ID")<1 || seen.has(t.id)) throw new Error("duplicate or invalid token ID");
+      seen.add(t.id);
+      if (integer(t.level,"level")<1 || t.level>state.maxLevel) throw new Error("invalid level");
+      integer(t.next,"token cooldown");
+      if (t.level<state.maxLevel) push(t.level,{...t,sim:false});
     }
-    const plan = [];
-    let seq = 0;
-    for (let lvl = 1; lvl < state.maxLevel; lvl++) {
+    for (let lvl=1; lvl<state.maxLevel; lvl++) {
       const group = pool.get(lvl) || [];
-      group.sort((a, b) => a.next - b.next || (a.id || 0) - (b.id || 0));
-      while (group.length >= 2) {
-        const survivor = group.shift();
-        const donor = group.shift();
-        const readyAt = Math.max(survivor.next, donor.next);
-        seq++;
-        plan.push({
-          n: seq, survivor: survivor.id, donor: donor.id, level: lvl,
-          survivorSim: survivor.sim, donorSim: donor.sim,
-          readyAt, status: readyAt <= coreHeight ? "ready" : "wait",
-          eta: etaMinutes(readyAt - coreHeight)
-        });
-        const cdB = state.cooldowns[lvl + 1] || 0;
-        const born = Math.max(readyAt, coreHeight) + cdB;
-        if (lvl + 1 < state.maxLevel) {
-          groupPushNext(pool, lvl + 1, { id: null, level: lvl + 1, next: born, sim: true });
+      group.sort((a,b)=>a.next-b.next || a.id-b.id);
+      while (group.length>=2) {
+        const survivor=group.shift(), donor=group.shift(), readyAt=Math.max(survivor.next,donor.next);
+        const future=survivor.sim || donor.sim;
+        plan.push({n:plan.length+1,survivor:survivor.id,donor:donor.id,level:lvl,
+          survivorSim:survivor.sim,donorSim:donor.sim,readyAt,
+          status:future ? "future" : readyAt<=coreHeight ? "ready" : "wait",
+          eta:future ? "reload required" : readyAt<=coreHeight ? "at snapshot" : "unknown"});
+        if (lvl+1<state.maxLevel) {
+          const next=integer(Math.max(readyAt,coreHeight)+state.cooldowns[lvl+1],"projected height");
+          push(lvl+1,{id:survivor.id,level:lvl+1,next,sim:true});
         }
       }
-      // keep leftovers for display
-      pool.set(lvl, group);
     }
     return plan;
   }
-
-  function groupPushNext(pool, lvl, t) {
-    if (!pool.has(lvl)) pool.set(lvl, []);
-    const arr = pool.get(lvl);
-    arr.push(t);
-    arr.sort((a, b) => a.next - b.next);
+  function simulate(tokens,plan) {
+    const before=new Map(); tokens.forEach(t=>before.set(t.level,(before.get(t.level)||0)+1));
+    const after=new Map(before);
+    for (const m of plan) {after.set(m.level,(after.get(m.level)||0)-2); after.set(m.level+1,(after.get(m.level+1)||0)+1);}
+    return {before,after};
   }
-
-  function etaMinutes(deltaBlocks) {
-    if (deltaBlocks <= 0) return "now";
-    const min = Math.max(1, Math.round(deltaBlocks / Math.max(state.blocksPerMin, 0.01)));
-    if (min < 60) return "~" + min + "m";
-    const h = (min / 60);
-    if (h < 48) return "~" + h.toFixed(1) + "h";
-    return "~" + (h / 24).toFixed(1) + "d";
+  function renderLadder(el,counts,cls) {
+    const levels=[...counts.keys()].sort((a,b)=>a-b), max=Math.max(1,...counts.values());
+    el.innerHTML=levels.length ? levels.map(l=>`<div class="rung"><div class="lv">L${l}</div><div class="bar ${cls}"><i style="width:${Math.max(0,Math.round(counts.get(l)/max*100))}%"></i></div><div class="n"><b>${counts.get(l)}</b></div></div>`).join("") : '<div class="hint">no wallet Squeeks</div>';
   }
-
-  function simulate(tokens, plan) {
-    const counts = new Map();
-    tokens.forEach((t) => counts.set(t.level, (counts.get(t.level) || 0) + 1));
-    const after = new Map(counts);
-    for (const m of plan) {
-      after.set(m.level, Math.max(0, (after.get(m.level) || 0) - 2));
-      const up = m.level + 1;
-      after.set(up, (after.get(up) || 0) + 1);
-    }
-    return { before: counts, after };
-  }
-
-  function renderLadder(el, counts, cls) {
-    const levels = [...counts.keys()].sort((a, b) => a - b);
-    if (!levels.length) { el.innerHTML = '<div class="hint">no squeeks</div>'; return; }
-    const max = Math.max(...counts.values());
-    el.innerHTML = levels.map((l) => {
-      const n = counts.get(l);
-      const w = Math.max(2, Math.round((n / max) * 100));
-      return `<div class="rung"><div class="lv">L${l}</div>
-        <div class="bar ${cls}"><i style="width:${w}%"></i></div>
-        <div class="n"><b>${n}</b></div></div>`;
-    }).join("");
-  }
-
   function renderMoves(plan) {
-    const body = $("movesBody");
-    if (!plan.length) {
-      body.innerHTML = '<tr><td colspan="7" style="color:#8a9280">no merge moves — every squeek is already at max level or alone on its rung</td></tr>';
-      $("planNote").textContent = "";
-      return;
-    }
-    body.innerHTML = plan.slice(0, 40).map((m) => {
-      const pill = m.status === "ready" ? '<span class="pill ok">ready</span>' : '<span class="pill wait">cooldown</span>';
-      const sid = m.survivor === null || m.survivor === undefined ? "new" : "#" + m.survivor;
-      const did = m.donor === null || m.donor === undefined ? "new" : "#" + m.donor;
-      return `<tr><td>${m.n}</td><td>${sid}</td><td>${did}</td><td>L${m.level}→${m.level + 1}</td>
-        <td>${pill}</td><td class="num">${m.readyAt || 0}</td><td class="num">${m.eta}</td></tr>`;
-    }).join("");
-    const waiting = plan.filter((m) => m.status !== "ready").length;
-    const sim = plan.filter((m) => m.survivorSim || m.donorSim).length;
-    const cadence = (state.blocksPerMin * 60).toFixed(1);
-    $("planNote").textContent = `${plan.length} moves in the full ladder · ${sim} of them consume a squeek created by an earlier move (they run on a later pass). `
-      + (waiting
-        ? `${plan.length - waiting} can run now; the rest unlock as Squeek blocks settle (${cadence} blocks/hour).`
-        : `every current-rung move is executable now.`);
+    $("movesBody").innerHTML=plan.length ? plan.slice(0,40).map(m=>`<tr><td>${m.n}</td><td>#${m.survivor}</td><td>#${m.donor}</td><td>L${m.level}→${m.level+1}</td><td><span class="pill ${m.status==="ready" && state.mergesOpen ? "ok" : "wait"}">${m.status==="future" ? "future" : !state.mergesOpen ? "gate closed" : m.status==="ready" ? "eligible" : "cooldown"}</span></td><td class="num">${m.readyAt}</td><td class="num">${m.eta}</td></tr>`).join("") : '<tr><td colspan="7">no merge pairs</td></tr>';
+    $("planNote").textContent=`${plan.length} projected moves${plan.length>40 ? " (first 40 shown)" : ""}. Future heights are lower bounds assuming earliest inclusion, not promises. Only completed Squeek blocks count; no time ETA. Reload after each merge. Survivor selection: earliest cooldown, then lowest ID. Donors burn permanently. Read-only; no transaction execution.`;
   }
-
-  // ---------- load ----------
-  async function load(addr) {
-    if (!ethers.isAddress(addr)) { log("not an address", "err"); return; }
-    $("log").innerHTML = "";
-    state.account = addr;
-    $("who").textContent = short(addr);
-    log("reading squeeks for " + short(addr) + " …");
-    try {
-      if (!state.provider) state.provider = await pickProvider();
-
-      let tokens = null;
-      try {
-        const api = await loadFromApi(addr);
-        tokens = api.tokens;
-        if (api.economy) {
-          state.mergesOpen = !!api.economy.mergesOpen;
-          state.maxLevel = Number(api.economy.maximumLevel);
-          state.coreHeight = Number(api.economy.coreBlockHeight) || state.coreHeight;
-          $("coreHeight").textContent = state.coreHeight.toLocaleString();
-        }
-        log("state read from the Squeekchain indexer");
-      } catch (e) {
-        log("indexer unavailable (" + e.message + ") — falling back to chain scan");
-      }
-
-      if (tokens === null) {
-        const c = new ethers.Contract(NFT, ABI, state.provider);
-        const [open, maxLvl] = await Promise.all([c.mergesOpen(), c.MAXIMUM_LEVEL()]);
-        state.mergesOpen = open;
-        state.maxLevel = Number(maxLvl);
-        const ids = await tokensOf(addr);
-        tokens = ids.length ? await loadTokenState(ids) : [];
-      }
-
-      $("gate").innerHTML = state.mergesOpen ? '<span class="pill ok">open</span>' : '<span class="pill off">closed</span>';
-      $("maxlvl").textContent = state.maxLevel;
-      state.tokens = tokens;
-      $("held").textContent = state.tokens.length;
-
-      // cooldown table
-      const cd = {};
-      for (let l = 1; l <= state.maxLevel; l++) {
-        try { cd[l] = Number(await c.cooldownBlocks(l)); } catch { cd[l] = 0; }
-      }
-      state.cooldowns = cd;
-
-      const { before } = simulate(state.tokens, []);
-      renderLadder($("ladderNow"), before, "before");
-
-      replan();
-      log(`<b>${state.tokens.length}</b> squeeks in wallet, gate ${open ? "open" : "closed"}`);
-    } catch (e) {
-      log(String(e.message || e), "err");
-    }
+  function clearPlan() {
+    state.loaded=false; state.tokens=[]; state.plan=[]; state.cooldowns={}; state.mergesOpen=false;
+    $("run").disabled=true; $("replan").disabled=true;
+    for (const id of ["held","gate","maxlvl","readyPairs","moves"]) $(id).textContent="—";
+    $("ladderNow").textContent="No verified inventory loaded"; $("ladderAfter").textContent="—";
+    $("movesBody").textContent="No verified plan"; $("planNote").textContent="";
   }
-
   function replan() {
-    state.plan = buildPlan(state.tokens, state.coreHeight);
-    const { after } = simulate(state.tokens, state.plan);
-    renderLadder($("ladderAfter"), after, "after");
-    renderMoves(state.plan);
-    const ready = state.plan.filter((m) => m.status === "ready").length;
-    const pairs = new Map();
-    state.tokens.forEach((t) => pairs.set(t.level, (pairs.get(t.level) || 0) + 1));
-    let pairCount = 0;
-    pairs.forEach((n) => { pairCount += Math.floor(n / 2); });
-    $("readyPairs").textContent = pairCount;
-    $("moves").textContent = ready;
-    $("run").disabled = !state.signer || ready === 0 || !state.mergesOpen || state.busy;
-    $("replan").disabled = !state.tokens.length;
-    const warn = $("warn");
-    if (!state.mergesOpen) {
-      warn.style.display = "block";
-      warn.textContent = "Merge gate is closed on-chain. You can plan now; execution unlocks when the admin opens merges.";
-    } else if (!state.signer) {
-      warn.style.display = "block";
-      warn.textContent = "Connect the wallet that owns these Squeeks to execute.";
-    } else {
-      warn.style.display = "none";
-    }
+    if (!state.loaded) return;
+    state.plan=buildPlan(state.tokens,state.coreHeight);
+    const {before,after}=simulate(state.tokens,state.plan);
+    renderLadder($("ladderNow"),before,"before"); renderLadder($("ladderAfter"),after,"after"); renderMoves(state.plan);
+    const eligible=state.mergesOpen ? state.plan.filter(m=>m.status==="ready").length : 0;
+    $("readyPairs").textContent=eligible; $("moves").textContent=eligible;
+    $("run").disabled=true; $("replan").disabled=false;
+    $("warn").style.display="block";
+    $("warn").textContent=`Read-only snapshot at Sepolia block ${state.snapshot}. ${state.mergesOpen ? "Gate open" : "Merge gate closed"}. Planning excludes deposited Squeeks; no wallet signs or sends transactions. Re-plan only recomputes this snapshot; Load refreshes chain data.`;
   }
-
-  // ---------- execute ----------
-  async function runLadder() {
-    state.busy = true;
-    $("run").disabled = true;
-    const c = new ethers.Contract(NFT, ABI, state.signer);
-    let done = 0, failed = 0;
-    for (const m of state.plan.filter((x) => x.status === "ready" && !x.survivorSim && !x.donorSim)) {
-      try {
-        log(`merge #${m.survivor} ← #${m.donor} (L${m.level}→${m.level + 1}) …`);
-        const tx = await c.merge(m.survivor, m.donor);
-        log(`sent <a href="${EXPLORER}/tx/${tx.hash}" target="_blank" rel="noopener">${tx.hash.slice(0, 12)}…</a>`);
-        const rc = await tx.wait();
-        log(`<b>ok</b> block ${rc.blockNumber} · gas ${rc.gasUsed.toString()}`, done);
-        done++;
-      } catch (e) {
-        failed++;
-        const msg = (e.shortMessage || e.message || String(e)).slice(0, 160);
-        log(`failed #${m.survivor}←#${m.donor}: ${msg}`, "err");
-      }
-    }
-    log(`ladder pass finished · ${done} merged · ${failed} failed`);
-    state.busy = false;
-    await loadCore();
-    await load(state.account);
-  }
-
-  // ---------- wallet ----------
-  async function connect() {
-    if (!window.ethereum) { log("no injected wallet found — install or use a read-only address", "err"); return; }
+  async function load(addr) {
+    if (state.busy) return;
+    clearPlan(); state.account=addr;
+    if (!ethers.isAddress(addr)) {log("not an address","err"); return;}
+    state.busy=true; const version=++state.version;
+    $("who").textContent=short(addr); $("load").disabled=true;
+    log("Reading wallet inventory and verifying at one Sepolia block…");
     try {
-      const browser = new ethers.BrowserProvider(window.ethereum);
-      await browser.send("eth_requestAccounts", []);
-      try {
-        await browser.send("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]);
-      } catch (e) {
-        if (e.code === 4902) {
-          await browser.send("wallet_addEthereumChain", [{
-            chainId: "0xaa36a7", chainName: "Sepolia",
-            nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
-            rpcUrls: [RPCS[0]], blockExplorerUrls: [EXPLORER]
-          }]);
-        }
-      }
-      state.signer = await browser.getSigner();
-      state.provider = new ethers.JsonRpcProvider(RPCS[0], 11155111, { staticNetwork: true });
-      const addr = await state.signer.getAddress();
-      $("addr").value = addr;
-      $("connect").style.display = "none";
-      $("disconnect").style.display = "";
-      await load(addr);
+      if (!state.provider) state.provider=await pickProvider();
+      if (Number((await state.provider.getNetwork()).chainId)!==11155111) throw new Error("RPC chain mismatch");
+      state.snapshot=await state.provider.getBlockNumber();
+      const c=new ethers.Contract(NFT,ABI,state.provider), core=new ethers.Contract(CORE,CORE_ABI,state.provider);
+      const at={blockTag:state.snapshot};
+      const [binding,open,maximum,coreState,balance]=await Promise.all([c.sqkCore(at),c.mergesOpen(at),c.MAXIMUM_LEVEL(at),core.state(at),c.balanceOf(addr,at)]);
+      if (binding.toLowerCase()!==CORE) throw new Error("NFT/core binding mismatch");
+      if (typeof open!=="boolean") throw new Error("invalid merge gate");
+      state.maxLevel=integer(maximum,"maximum level");
+      if (state.maxLevel<1 || state.maxLevel>255) throw new Error("invalid maximum level");
+      state.coreHeight=integer(coreState.blockHeight === undefined ? coreState[3] : coreState.blockHeight,"core height");
+      state.mergesOpen=open;
+      let ids;
+      try {ids=(await loadFromApi(addr)).tokens.map(t=>t.id);}
+      catch (e) {log("Indexer unavailable: "+e.message+"; scanning incoming transfers…"); ids=await tokensOf(addr);}
+      if (new Set(ids).size!==ids.length || ids.length!==integer(balance,"wallet balance")) throw new Error("incomplete inventory: balance mismatch; retry Load");
+      state.tokens=await loadTokenState(ids);
+      for (let lvl=2; lvl<state.maxLevel; lvl++) state.cooldowns[lvl]=integer(await c.cooldownBlocks(lvl,at),"cooldown L"+lvl);
+      if (version!==state.version) return;
+      state.loaded=true;
+      $("held").textContent=state.tokens.length; $("gate").textContent=open ? "open" : "closed";
+      $("maxlvl").textContent=state.maxLevel; $("coreHeight").textContent=state.coreHeight;
+      $("coreRound").textContent=integer(coreState.settledThroughRound === undefined ? coreState[0] : coreState.settledThroughRound,"round");
+      $("coreState").textContent=coreState.paused === true || coreState[7] === true ? "paused" : "snapshot";
+      $("coreRate").textContent="no time ETA";
+      replan(); log(state.tokens.length+" Squeeks verified; gate "+(open ? "open" : "closed"));
     } catch (e) {
-      log(String(e.message || e), "err");
-    }
+      clearPlan(); $("warn").style.display="block"; $("warn").textContent="Read failed. No usable plan; retry Load.";
+      log(String(e.message || e),"err");
+    } finally {state.busy=false; $("load").disabled=false;}
   }
-
+  async function runLadder() {log("Read-only planner: transaction execution disabled.","err");}
+  async function connect() {
+    if (!window.ethereum) {log("No injected wallet found; enter a public address.","err"); return;}
+    try {
+      const accounts=await window.ethereum.request({method:"eth_requestAccounts"});
+      if (!accounts.length || !ethers.isAddress(accounts[0])) throw new Error("no wallet account");
+      $("addr").value=accounts[0]; await load(accounts[0]);
+      $("disconnect").style.display="";
+    } catch (e) {log(String(e.message || e),"err");}
+  }
   // ---------- boot ----------
-  $("load").onclick = () => load($("addr").value.trim());
-  $("addr").addEventListener("keydown", (e) => { if (e.key === "Enter") load($("addr").value.trim()); });
-  $("connect").onclick = connect;
-  $("disconnect").onclick = () => {
-    state.signer = null; state.account = null; state.tokens = []; state.plan = [];
-    $("connect").style.display = ""; $("disconnect").style.display = "none";
-    $("who").textContent = "—"; $("held").textContent = "—";
-    $("ladderNow").innerHTML = '<div class="hint">load a wallet to build the ladder</div>';
-    $("ladderAfter").innerHTML = '<div class="hint">—</div>';
-    $("movesBody").innerHTML = '<tr><td colspan="7" style="color:#8a9280">—</td></tr>';
-    $("run").disabled = true; $("warn").style.display = "none";
-  };
-  $("replan").onclick = replan;
-  $("run").onclick = runLadder;
-
-  pickProvider().then((p) => { state.provider = p; }).catch(() => {});
-  loadCore();
-  setInterval(loadCore, 60000);
+  $("load").onclick=()=>load($("addr").value.trim());
+  $("addr").addEventListener("keydown",e=>{if(e.key==="Enter") load($("addr").value.trim());});
+  $("connect").onclick=connect; $("run").onclick=runLadder; $("replan").onclick=replan;
+  $("disconnect").onclick=()=>{++state.version; clearPlan(); state.account=null; $("who").textContent="—"; $("disconnect").style.display="none";};
+  if (window.ethereum && window.ethereum.on) {
+    const invalidate=()=>{++state.version; clearPlan(); log("Wallet account/network changed. Reload the selected address.");};
+    window.ethereum.on("accountsChanged",invalidate); window.ethereum.on("chainChanged",invalidate);
+  }
 })();
 </script>
 </body>

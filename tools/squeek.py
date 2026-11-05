@@ -1,371 +1,183 @@
 #!/usr/bin/env python3
+"""Read-only Squeek Ladder (Sepolia).
+
+Usage: python tools/squeek.py [check|squeeks|ladder] [0xADDRESS]
+Optional RPC_URL environment variable; never opens .env or signs.
+Wallet custody only; deposited NFTs are intentionally excluded.
+Reference: https://docs.squeekchain.com/developers/nft.md
+Pinned: Sepolia core-sepolia-20261103 revision 7, deployments/sepolia.json.
+ABI sources: assets/abi/SqueekNFT.json and assets/abi/SqueekCore.json.
+Wallet merges belong to NFT.merge; deposited merges to Staking.mergeDeposited.
+This tool intentionally prepares neither calls nor transactions.
 """
-squeek.py — SqueekChain Genesis command line for the owner wallet.
-
-Reads D:\\NXR\\squeek\\.env  (PRIVATE_KEY + optional RPC_URL)
-
-  python squeek.py check        # wallet, gas, squeeks, merge gate, checkpoint status
-  python squeek.py squeeks      # daftar Squeek + level + cooldown
-  python squeek.py ladder       # rencana merge penuh (L1..L10)
-  python squeek.py tester       # kirim 1 tx resmi ke kontrak Squeekchain (badge code.the_tester)
-  python squeek.py merge        # jalankan merge yang sudah siap
-  python squeek.py raw <addr> <hexdata>   # kirim calldata manual
-
-Testnet Sepolia. Butuh Sepolia ETH untuk gas.
-"""
+import argparse
 import json
 import os
-import pathlib
-import sys
-import time
 import urllib.parse
 import urllib.request
-
-from eth_account import Account
 from web3 import Web3
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-ENV_PATH = ROOT / ".env"
-
 CHAIN_ID = 11155111
-ADDR = {
-    "core": "0xfd6c166d4b8e2962e65746a13e5a0797cd4de0c4",
-    "mining": "0x2dccb11fcc2defdd188555e45acb52231e82e218",
-    "staking": "0x50fd1780526c3186a0c037c7622203bc4fb611ca",
-    "sqk": "0xd78a3956cf63164d1fa1c622ad3c66623162fa1e",
-    "nft": "0xc4c7982657f00509548f3a3a41db7fa439a6856b",
-}
+DEFAULT_ACCOUNT = "0x8346Ac89e4B3297F014050dFe8baf87bF7567e63"
+NFT = "0xc4c7982657f00509548f3a3a41db7fa439a6856b"
+CORE = "0xfd6c166d4b8e2962e65746a13e5a0797cd4de0c4"
 API = "https://api.squeekchain.com/v1"
-EXPLORER = "https://eth-sepolia.blockscout.com"
-
-def _f(name, ins, outs, state=False):
-    return {
-        "type": "function",
-        "name": name,
-        "stateMutability": "nonpayable" if state else "view",
-        "inputs": [{"name": f"a{i}", "type": t} for i, t in enumerate(ins)],
-        "outputs": [{"name": f"o{i}", "type": t} for i, t in enumerate(outs)],
-    }
 
 
-ABI = {
-    "nft": [
-        _f("balanceOf", ["address"], ["uint256"]),
-        _f("ownerOf", ["uint256"], ["address"]),
-        _f("level", ["uint256"], ["uint8"]),
-        _f("nextMergeHeight", ["uint256"], ["uint64"]),
-        _f("cooldownBlocks", ["uint8"], ["uint64"]),
-        _f("mergesOpen", [], ["bool"]),
-        _f("MAXIMUM_LEVEL", [], ["uint8"]),
-        _f("merge", ["uint256", "uint256"], [], state=True),
-    ],
-    "sqk": [
-        _f("balanceOf", ["address"], ["uint256"]),
-        _f("transfer", ["address", "uint256"], ["bool"], state=True),
-    ],
-    "mining": [
-        _f("checkpoint", [], [], state=True),
-        _f("checkpointStatus", [], ["bool", "uint64", "bool"]),
-        _f(
-            "state",
-            [],
-            ["(uint256,uint64,uint64,uint64,uint64,address,bool,bool,bool,bool)"],
-        ),
-    ],
-}
+def _f(name, ins, outs):
+    return {"type": "function", "name": name, "stateMutability": "view",
+            "inputs": [{"name": "a" + str(i), "type": t} for i, t in enumerate(ins)],
+            "outputs": [{"name": "o" + str(i), "type": t} for i, t in enumerate(outs)]}
 
 
-def load_env():
-    cfg = {}
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip()
-    for k in ("PRIVATE_KEY", "RPC_URL"):
-        if os.environ.get(k):
-            cfg[k] = os.environ[k]
-    return cfg
-
-
-def rpc_url(cfg):
-    return cfg.get("RPC_URL") or "https://sepolia.gateway.tenderly.co"
-
-
-def w3(cfg):
-    p = Web3(Web3.HTTPProvider(rpc_url(cfg), request_kwargs={"timeout": 40}))
-    if p.eth.chain_id != CHAIN_ID:
-        raise SystemExit(f"chain mismatch: {p.eth.chain_id}")
-    return p
+NFT_ABI = [_f("balanceOf", ["address"], ["uint256"]),
+           _f("ownerOf", ["uint256"], ["address"]), _f("level", ["uint256"], ["uint8"]),
+           _f("nextMergeHeight", ["uint256"], ["uint64"]), _f("cooldownBlocks", ["uint8"], ["uint64"]),
+           _f("mergesOpen", [], ["bool"]), _f("MAXIMUM_LEVEL", [], ["uint8"]), _f("sqkCore", [], ["address"])]
+CORE_ABI = [{"type": "function", "name": "state", "stateMutability": "view", "inputs": [],
+             "outputs": [{"name": "", "type": "tuple", "components": [
+                 {"name": n, "type": t} for n, t in [
+                     ("settledThroughRound", "uint64"), ("cumulativeWork", "uint64"),
+                     ("cumulativeBlockUnits", "uint96"), ("blockHeight", "uint64"),
+                     ("blockProgress", "uint96"), ("workPerThousandBlocks", "uint32"),
+                     ("authorizationNonce", "uint256"), ("paused", "bool")]]}]}]
 
 
 def api_account(addr):
-    out, cursor = [], None
-    while True:
+    pages, cursor, seen = [], None, set()
+    for _ in range(60):
         url = f"{API}/accounts/{addr}"
-        if cursor:
-            url += "?cursor=" + urllib.parse.quote(cursor)
-        req = urllib.request.Request(url, headers={"Accept": "application/json", "Origin": "https://squeekchain.com"})
-        d = json.load(urllib.request.urlopen(req, timeout=30))
-        if d.get("status") != "available":
-            raise RuntimeError("indexer " + str(d.get("status")))
-        out.append(d)
-        cursor = d.get("nextCursor")
-        if not cursor:
-            return out
+        if cursor is not None:
+            url += "?" + urllib.parse.urlencode({"cursor": cursor})
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Squeek-Ladder/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as response:
+            data = json.load(response)
+        if data.get("status") != "available" or not isinstance(data.get("tokens"), list):
+            raise ValueError("incomplete or unavailable indexer response")
+        pages.append(data)
+        cursor = data.get("nextCursor")
+        if cursor is None:
+            return pages
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise ValueError("invalid or repeated indexer cursor")
+        seen.add(cursor)
+    raise ValueError("incomplete pagination: page limit reached")
 
 
 def fetch_squeeks(addr):
-    pages = api_account(addr)
-    toks, eco = [], None
-    for d in pages:
-        eco = d.get("economy") or eco
-        for t in d.get("tokens") or []:
-            if t.get("custody") != "wallet":
+    tokens, seen, economy = [], set(), {}
+    for page in api_account(addr):
+        economy = page.get("economy") or economy
+        for token in page["tokens"]:
+            token_id = int(token["tokenId"])
+            if token_id <= 0 or token_id in seen:
+                raise ValueError("invalid or duplicate token ID")
+            seen.add(token_id)
+            if token.get("custody") != "wallet":
                 continue
-            toks.append(
-                {
-                    "id": int(t["tokenId"]),
-                    "level": int(t["level"]),
-                    "next": int(t["nextMergeHeight"]),
-                    "state": t.get("mergeState"),
-                }
-            )
-    toks.sort(key=lambda x: x["id"])
-    return toks, (eco or {})
-
-
-def owner_of(p):
-    cfg = load_env()
-    key = cfg.get("PRIVATE_KEY", "")
-    return Account.from_key(key) if key else None
-
-
-def cmd_check(_args):
-    cfg = load_env()
-    p = w3(cfg)
-    acct = owner_of(cfg)
-    addr = acct.address if acct else "0x8346Ac89e4B3297F014050dFe8baf87bF7567e63"
-    bal = p.eth.get_balance(addr)
-    print(f"wallet        {addr}")
-    print(f"private key   {'loaded' if acct else 'KOSONG — isi PRIVATE_KEY di ' + str(ENV_PATH)}")
-    print(f"eth balance   {p.from_wei(bal, 'ether')} ETH")
-    print(f"block         {p.eth.block_number}")
-
-    try:
-        toks, eco = fetch_squeeks(addr)
-    except Exception as e:  # indexer down → fall back to chain
-        print(f"indexer       error ({e}) — baca chain langsung")
-        nft = p.eth.contract(address=Web3.to_checksum_address(ADDR["nft"]), abi=ABI["nft"])
-        bal_nft = nft.functions.balanceOf(addr).call()
-        print(f"squeeks       {bal_nft} (balanceOf)")
-        eco = {
-            "mergesOpen": nft.functions.mergesOpen().call(),
-            "maximumLevel": nft.functions.MAXIMUM_LEVEL().call(),
-            "coreBlockHeight": "?",
-        }
-        toks = []
-    else:
-        print(f"squeeks       {len(toks)}  (wallet custody)")
-    print(f"merges open   {eco.get('mergesOpen')}")
-    print(f"max level     {eco.get('maximumLevel')}")
-    print(f"core block    {eco.get('coreBlockHeight')}")
-    print(f"claimable     {eco.get('claimable') or 0}")
-
-    mining = p.eth.contract(address=Web3.to_checksum_address(ADDR["mining"]), abi=ABI["mining"])
-    try:
-        paused, nxt, settled = mining.functions.checkpointStatus().call()
-        print(f"checkpoint    round {nxt} settled={settled} core_paused={paused}")
-    except Exception as e:
-        print(f"checkpoint    read error: {e}")
-
-
-def cmd_squeeks(_args):
-    cfg = load_env()
-    acct = owner_of(cfg)
-    addr = acct.address if acct else "0x8346Ac89e4B3297F014050dFe8baf87bF7567e63"
-    toks, eco = fetch_squeeks(addr)
-    print(f"{len(toks)} squeeks · core block {eco.get('coreBlockHeight')} · merges open {eco.get('mergesOpen')}")
-    for t in toks:
-        print(f"  #{t['id']:<6} L{t['level']:<2} next_merge {t['next']:<8} {t['state']}")
+            level, nxt = int(token["level"]), int(token["nextMergeHeight"])
+            if level < 1 or nxt < 0:
+                raise ValueError("invalid token state")
+            tokens.append({"id": token_id, "level": level, "next": nxt})
+    return sorted(tokens, key=lambda t: t["id"]), economy
 
 
 def build_plan(toks, core_height, max_level, cooldowns):
-    pool = {}
+    if type(core_height) is not int or core_height < 0 or type(max_level) is not int or not 1 <= max_level <= 255:
+        raise ValueError("invalid height or maximum level")
+    for lvl in range(2, max_level):
+        if lvl not in cooldowns or type(cooldowns[lvl]) is not int or cooldowns[lvl] < 0:
+            raise ValueError(f"missing or invalid cooldown for level {lvl}")
+    pool, seen = {}, set()
     for t in toks:
-        if t["level"] >= max_level:
-            continue
-        pool.setdefault(t["level"], []).append({"id": t["id"], "next": t["next"], "sim": False})
+        if type(t["id"]) is not int or t["id"] <= 0 or t["id"] in seen:
+            raise ValueError("duplicate or invalid token ID")
+        seen.add(t["id"])
+        if type(t["level"]) is not int or type(t["next"]) is not int or not 1 <= t["level"] <= max_level or t["next"] < 0:
+            raise ValueError("invalid token state")
+        if t["level"] < max_level:
+            pool.setdefault(t["level"], []).append({"id": t["id"], "next": t["next"], "sim": False})
     plan = []
     for lvl in range(1, max_level):
-        group = sorted(pool.get(lvl, []), key=lambda x: (x["next"], x["id"] or 0))
+        group = sorted(pool.get(lvl, []), key=lambda t: (t["next"], t["id"]))
         while len(group) >= 2:
-            surv, donor = group.pop(0), group.pop(0)
-            ready_at = max(surv["next"], donor["next"])
-            plan.append(
-                {
-                    "survivor": surv["id"],
-                    "donor": donor["id"],
-                    "level": lvl,
-                    "ready_at": ready_at,
-                    "ready": ready_at <= core_height,
-                    "sim": surv["sim"] or donor["sim"],
-                }
-            )
-            born = max(ready_at, core_height) + cooldowns.get(lvl + 1, 0)
+            survivor, donor = group.pop(0), group.pop(0)
+            earliest = max(survivor["next"], donor["next"])
+            simulated = survivor["sim"] or donor["sim"]
+            plan.append({"survivor": survivor["id"], "donor": donor["id"], "level": lvl,
+                         "ready_at": earliest, "ready": not simulated and earliest <= core_height, "sim": simulated})
             if lvl + 1 < max_level:
-                group.append({"id": None, "next": born, "sim": True})
-                group.sort(key=lambda x: (x["next"], x["id"] or 0))
+                pool.setdefault(lvl + 1, []).append({"id": survivor["id"],
+                    "next": max(earliest, core_height) + cooldowns[lvl + 1], "sim": True})
     return plan
 
 
-def cmd_ladder(_args):
-    cfg = load_env()
-    p = w3(cfg)
-    acct = owner_of(cfg)
-    addr = acct.address if acct else "0x8346Ac89e4B3297F014050dFe8baf87bF7567e63"
-    toks, eco = fetch_squeeks(addr)
-    if not toks:
-        print("0 squeeks di wallet — tidak ada yang bisa di-merge")
-        return
-    max_level = int(eco.get("maximumLevel") or 10)
-    core_height = int(eco.get("coreBlockHeight") or 0)
-    nft = p.eth.contract(address=Web3.to_checksum_address(ADDR["nft"]), abi=ABI["nft"])
-    cds = {}
-    for lvl in range(1, max_level + 1):
-        try:
-            cds[lvl] = nft.functions.cooldownBlocks(lvl).call()
-        except Exception:
-            cds[lvl] = 0
-    plan = build_plan(toks, core_height, max_level, cds)
-    ready = [m for m in plan if m["ready"] and not m["sim"]]
-    print(f"{len(toks)} squeeks · {len(plan)} langkah ladder · {len(ready)} siap sekarang")
-    for i, m in enumerate(plan[:60], 1):
-        tag = "READY" if m["ready"] else f"wait@{m['ready_at']}"
-        sim = " (pakai squeek hasil merge)" if m["sim"] else ""
-        print(f"  {i:>3}. #{m['survivor']} <- #{m['donor']}  L{m['level']}->{m['level']+1}  {tag}{sim}")
+def read_snapshot(addr):
+    """Indexer discovers IDs only; authoritative reads share one Ethereum block."""
+    p = Web3(Web3.HTTPProvider(os.environ.get("RPC_URL") or "https://sepolia.gateway.tenderly.co",
+                             request_kwargs={"timeout": 20}))
+    if p.eth.chain_id != CHAIN_ID:
+        raise ValueError("RPC chain mismatch; expected Sepolia 11155111")
+    block = p.eth.block_number
+    nft = p.eth.contract(address=Web3.to_checksum_address(NFT), abi=NFT_ABI)
+    core = p.eth.contract(address=Web3.to_checksum_address(CORE), abi=CORE_ABI)
+    def read(fn):
+        return fn.call(block_identifier=block)
+    if read(nft.functions.sqkCore()).lower() != CORE:
+        raise ValueError("NFT/core binding mismatch")
+    maximum = int(read(nft.functions.MAXIMUM_LEVEL()))
+    if not 1 <= maximum <= 255:
+        raise ValueError("invalid maximum level")
+    height = int(read(core.functions.state())[3])
+    opened = read(nft.functions.mergesOpen())
+    if type(opened) is not bool:
+        raise ValueError("invalid merge gate")
+    cds = {lvl: int(read(nft.functions.cooldownBlocks(lvl))) for lvl in range(2, maximum)}
+    indexed, _ = fetch_squeeks(addr)
+    if len(indexed) != read(nft.functions.balanceOf(addr)):
+        raise ValueError("incomplete indexer inventory: wallet balance mismatch")
+    tokens = []
+    for token in indexed:
+        token_id = token["id"]
+        if read(nft.functions.ownerOf(token_id)).lower() != addr.lower():
+            raise ValueError(f"ownership mismatch for #{token_id}")
+        tokens.append({"id": token_id, "level": int(read(nft.functions.level(token_id))),
+                       "next": int(read(nft.functions.nextMergeHeight(token_id)))})
+    return {"tokens": tokens, "height": height, "maximum": maximum, "cooldowns": cds,
+            "open": opened, "block": block}
 
 
-def send(cfg, fn, label):
-    p = w3(cfg)
-    acct = owner_of(cfg)
-    if acct is None:
-        raise SystemExit("PRIVATE_KEY kosong — isi dulu di " + str(ENV_PATH))
-    tx = fn.build_transaction(
-        {
-            "from": acct.address,
-            "nonce": p.eth.get_transaction_count(acct.address),
-            "chainId": CHAIN_ID,
-            "gasPrice": p.eth.gas_price,
-        }
-    )
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", nargs="?", default="ladder")
+    parser.add_argument("address", nargs="?", default=DEFAULT_ACCOUNT)
+    args = parser.parse_args(argv)
+    if args.command not in ("check", "squeeks", "ladder"):
+        parser.error("read-only tool: transaction commands are disabled")
+    if not Web3.is_address(args.address):
+        parser.error("invalid account address")
+    address = Web3.to_checksum_address(args.address)
     try:
-        tx["gas"] = int(p.eth.estimate_gas(tx) * 1.25)
-    except Exception:
-        tx["gas"] = 300000
-    signed = acct.sign_transaction(tx)
-    h = p.eth.send_raw_transaction(signed.raw_transaction)
-    print(f"{label}: sent {h.hex()}")
-    rc = p.eth.wait_for_transaction_receipt(h, timeout=300)
-    ok = rc.status == 1
-    print(f"{label}: {'OK' if ok else 'REVERTED'} block {rc.blockNumber} gas {rc.gasUsed}")
-    print(f"{EXPLORER}/tx/{h.hex()}")
-    return ok
-
-
-def cmd_tester(_args):
-    """Badge code.the_tester: one real transaction to a tracked Squeekchain contract."""
-    cfg = load_env()
-    p = w3(cfg)
-    acct = owner_of(cfg)
-    if acct is None:
-        raise SystemExit("PRIVATE_KEY kosong — isi dulu di " + str(ENV_PATH))
-
-    mining = p.eth.contract(address=Web3.to_checksum_address(ADDR["mining"]), abi=ABI["mining"])
-    paused, nxt, settled = mining.functions.checkpointStatus().call()
-    print(f"checkpointStatus: nextRound={nxt} settled={settled} corePaused={paused}")
-
-    if settled and not paused and nxt != 0:
-        return 0 if send(cfg, mining.functions.checkpoint(), "checkpoint") else 1
-
-    # round belum settle: pakai tx resmi lain yang selalu lolos — SQK.transfer(self, 0)
-    sqk = p.eth.contract(address=Web3.to_checksum_address(ADDR["sqk"]), abi=ABI["sqk"])
-    print("round belum settle → kirim SQK.transfer(self, 0) sebagai tx resmi ke kontrak Squeekchain")
-    return 0 if send(cfg, sqk.functions.transfer(acct.address, 0), "sqk.transfer(0)") else 1
-
-
-def cmd_merge(_args):
-    cfg = load_env()
-    p = w3(cfg)
-    acct = owner_of(cfg)
-    if acct is None:
-        raise SystemExit("PRIVATE_KEY kosong — isi dulu di " + str(ENV_PATH))
-    toks, eco = fetch_squeeks(acct.address)
-    if not toks:
-        print("0 squeeks di wallet")
-        return 1
-    max_level = int(eco.get("maximumLevel") or 10)
-    core_height = int(eco.get("coreBlockHeight") or 0)
-    nft = p.eth.contract(address=Web3.to_checksum_address(ADDR["nft"]), abi=ABI["nft"])
-    cds = {l: nft.functions.cooldownBlocks(l).call() for l in range(1, max_level + 1)}
-    plan = [m for m in build_plan(toks, core_height, max_level, cds) if m["ready"] and not m["sim"]]
-    if not plan:
-        print("tidak ada langkah yang siap (semua cooldown / belum punya pasangan)")
+        s = read_snapshot(address)
+        plan = build_plan(s["tokens"], s["height"], s["maximum"], s["cooldowns"])
+        eligible = sum(m["ready"] for m in plan) if s["open"] else 0
+        print(f"READ ONLY · {address} · Sepolia snapshot {s['block']}")
+        print(f"{len(s['tokens'])} wallet Squeeks · core height {s['height']} · merges open {s['open']}")
+        print(f"{len(plan)} projected moves · {eligible} eligible at snapshot (gate included)")
+        if args.command == "squeeks":
+            for t in s["tokens"]:
+                print(f"#{t['id']} L{t['level']} next height {t['next']}")
+        if args.command == "ladder":
+            for m in plan:
+                status = "FUTURE / RELOAD REQUIRED" if m["sim"] else (
+                    "GATE CLOSED" if not s["open"] else "ELIGIBLE AT SNAPSHOT" if m["ready"] else "COOLDOWN")
+                print(f"#{m['survivor']} <- #{m['donor']} L{m['level']}->{m['level'] + 1} {status}; earliest height {m['ready_at']}")
+        print("Projection only: future heights assume earliest inclusion, not a promised schedule. Donor burns permanently; survivor ID stays. No wall-clock ETA. Reload after each merge. No signing or transaction submission.")
         return 0
-    print(f"{len(plan)} merge siap dijalankan")
-    done = 0
-    for m in plan:
-        if send(cfg, nft.functions.merge(m["survivor"], m["donor"]), f"merge #{m['survivor']}<-#{m['donor']}"):
-            done += 1
-        else:
-            break
-    print(f"selesai: {done}/{len(plan)} merge sukses")
-    return 0
+    except Exception as exc:
+        print(f"READ FAILED — no usable plan: {exc}", file=__import__('sys').stderr)
+        return 1
 
-
-def cmd_raw(args):
-    if len(args) != 2:
-        raise SystemExit("usage: squeek.py raw <address> <hexdata>")
-    cfg = load_env()
-    p = w3(cfg)
-    acct = owner_of(cfg)
-    if acct is None:
-        raise SystemExit("PRIVATE_KEY kosong — isi dulu di " + str(ENV_PATH))
-    to = Web3.to_checksum_address(args[0])
-    data = args[1] if args[1].startswith("0x") else "0x" + args[1]
-    tx = {
-        "from": acct.address,
-        "to": to,
-        "data": data,
-        "value": 0,
-        "nonce": p.eth.get_transaction_count(acct.address),
-        "chainId": CHAIN_ID,
-        "gasPrice": p.eth.gas_price,
-    }
-    try:
-        tx["gas"] = int(p.eth.estimate_gas(tx) * 1.25)
-    except Exception:
-        tx["gas"] = 300000
-    signed = acct.sign_transaction(tx)
-    h = p.eth.send_raw_transaction(signed.raw_transaction)
-    rc = p.eth.wait_for_transaction_receipt(h, timeout=300)
-    print(f"{'OK' if rc.status == 1 else 'REVERTED'} {h.hex()}")
-    print(f"{EXPLORER}/tx/{h.hex()}")
-
-
-COMMANDS = {
-    "check": cmd_check,
-    "squeeks": cmd_squeeks,
-    "ladder": cmd_ladder,
-    "tester": cmd_tester,
-    "merge": cmd_merge,
-    "raw": cmd_raw,
-}
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0)
-    sys.exit(COMMANDS[sys.argv[1]](sys.argv[2:]) or 0)
+    raise SystemExit(main())

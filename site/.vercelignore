@@ -1,0 +1,9 @@
+.env*
+.vercel
+__pycache__
+**/__pycache__/**
+*.pyc
+l.html
+live.html
+README.md
+DEPLOY.md
