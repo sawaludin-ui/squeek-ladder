@@ -1,0 +1,16 @@
+{
+  "name": "squeek-sprint",
+  "version": "2.0.0",
+  "private": true,
+  "description": "A wheel-powered browser survival game built on Squeekchain",
+  "scripts": {
+    "build": "node tools/build-schema.cjs && node tools/sync-site.cjs",
+    "test": "node --test tests/sprint-engine.test.cjs tests/sprint.test.cjs tests/reads.test.cjs tests/genesis.test.cjs",
+    "test:browser": "python tests/sprint_browser.py"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "esbuild": "0.28.2"
+  }
+}

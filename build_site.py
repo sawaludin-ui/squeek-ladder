@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_site.py — generates site/index.html for Squeek Ladder.
+build_site.py — generates planner.html for Squeek Ladder.
 Single-file static app: no build step, no backend, no custody.
 """
 import pathlib, textwrap
@@ -401,6 +401,6 @@ HTML = r"""<!doctype html>
 </html>
 """
 
-out = pathlib.Path(__file__).parent / "index.html"
+out = pathlib.Path(__file__).parent / "planner.html"
 out.write_text(HTML, encoding="utf-8")
 print(out, len(HTML), "bytes")

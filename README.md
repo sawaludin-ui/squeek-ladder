@@ -1,66 +1,72 @@
-# Squeek Ladder
+# Squeek Sprint
 
-Read-only merge planner and Genesis evidence dashboard for [SqueekChain](https://squeekchain.com).
+A playable, three-lane hamster expedition driven by Squeekchain's public hardware feed. The GitHub repository retains its historical `squeek-ladder` name; **Squeek Sprint is the submitted game**, not the legacy planner or profile reader.
 
-Genesis Navigator: https://squeek.onerub.net/genesis.html
+Built on Squeekchain — https://docs.squeekchain.com
 
-It shows public Aura, rank, badge eligibility and next-tier deltas, and exports actual upstream snapshots. Its fixed-upstream GET-only adapter (`site/api/genesis.py`) resolves browser Origin restrictions without private sessions or wallet credentials.
+Production: https://squeek.onerub.net
 
-Live: https://squeek.onerub.net
+## Play
 
-## What it does
+Survive **60 active seconds**, collect seeds, rescue supplies, dodge rocks. Three hits end a run. Arrows / A-D / touch buttons / swipe change lanes. Space spends three seed charges on a four-second shield. P pauses. Sound is optional and off by default.
 
-- Reads every Squeek in a wallet straight from the SqueekChain indexer (`/v1/accounts/{address}`):
-  level, `nextMergeHeight`, merge state, plus core block height, `mergesOpen` and `MAXIMUM_LEVEL`.
-- Builds the full survivor/donor pairing tree up to level 10, chaining freshly merged Squeeks into
-  the next tier with the real `cooldownBlocks` from `SqueekNFT`.
-- Shows which merges are executable right now and which block unlocks the rest.
-- Links every core contract and the explorer so a holder can verify aura, badges and standing.
+- **Live:** requires a fresh, schema-valid, moving hardware wheel. RPM continuously determines trail speed. Each five actual work units unlocks a supply drop, and each twelve advances the habitat. Work is the API's cumulative counter, **not a claim of exact physical revolutions**. Counter values use BigInt. Pause excludes work received while paused.
+- **Practice:** deterministic local simulation, always available. No live work or live medal is fabricated. Practice records are separate.
+- Stale/offline/simulated/COUNTER_FAULT input cannot be labeled live. Live runs wait safely for the wheel, without advancing the survival timer. Epoch changes or decreasing counters end a run; out-of-order observations cannot rewind state.
+- Personal bests and bronze/silver/gold keepsakes are browser-local, editable by that browser, and not authoritative rankings. They are **not Genesis badges, Aura, token rewards, or on-chain proofs**.
 
-## Files
+Surviving a valid live expedition earns a local bronze keepsake. Silver needs at least one rescued supply and eight seeds; gold needs two supplies and fifteen seeds. Supply crates are worth 50 points; each seed is worth 10. No wallet, signup, or transaction is needed.
 
-| File | Purpose |
-|---|---|
-| `index.html` | generated read-only planner (ethers CDN dependency) |
-| `genesis.html` | public Genesis badge/standing dashboard |
-| `site/api/genesis.py` | GET-only public API adapter |
-| `build_site.py` | generator for `index.html` |
-| `tools/squeek.py` | read-only CLI; transaction commands disabled |
-| `tests/` | regression suites and live browser checks |
+## Real integration, not a read-only wrapper
 
-## CLI
+Actual hamster activity affects an ongoing game in three independent ways: movement/obstacle tempo from RPM; interactable supply spawns from increases in cumulative work; and habitat progression from that same real counter. Real player movement, collision, resource use, survival, and scoring determine outcomes. Habitat and supply thresholds are **game rules**, not protocol emission rules. There are no prediction rounds or settlement claims.
 
-```
-cd D:\NXR\squeek
-python tools\squeek.py check
-```
+The client requests `https://api.squeekchain.com/v1/status` at most once per five seconds while visible, with a bounded eight-second request timeout and no overlapping requests. It validates the **entire response** against the pinned official Draft 2020-12 schema before reading `measurement`.
 
-`check` is read-only. Transaction execution is disabled; the browser planner does not request signatures. Missing cooldowns, incomplete inventories, wrong chain and failed ownership reads fail closed. Projected merges preserve survivor IDs but are never labelled immediately executable. Deposited/staking custody is not supported. Merges do not establish Genesis Aura.
+A hardware reading must have `freshness: online`, hardware provenance, a non-faulted core, and both `observedAt` and `receivedAt` within 120 seconds (maximum five-second future clock tolerance). This application uses a conservative local admission window; the API's own freshness classification is still required. An unsupported schema or missing measurement fails closed to practice. Game work is not used as a round-scoped or settled counter.
 
-## Regression checks
+Official references:
+- https://docs.squeekchain.com/developers/api.md
+- https://docs.squeekchain.com/developers/build-with-ai.md
+- https://docs.squeekchain.com/assets/api/status.json
+- https://squeekchain.com/genesis/code
+
+## Run, test, and build
+
+Node.js 18+ and Python 3 are required for the full suite. Runtime gameplay is static HTML/CSS/JS; Ajv and esbuild are build-only dependencies pinned in package-lock.json.
 
 ```sh
-python build_site.py
-node --test tests/reads.test.cjs
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+npm test
 python -m unittest discover -s tests -p 'test_*.py'
-node tests/genesis.test.cjs
-python tests/genesis_browser.py
+python -m http.server 8080 --directory site
 ```
 
-The reads suite includes the planner tests. Populated-wallet scenarios use fixtures; live empty-wallet success is not evidence of every populated-wallet scenario. The browser test exercises live public APIs, JSON download and desktop/mobile layout. Python CLI tests need `web3`; browser tests need Python Playwright and Chromium.
+Visit http://127.0.0.1:8080. For real-browser tests, install Playwright in a virtual environment and install its isolated Chromium (not a personal browser profile):
 
-Before deployment, copy generated `index.html` and `genesis.html` into `site/`. Deploy that directory to the existing Vercel project; its Python public-data adapter uses only the standard library. `.vercelignore` excludes local environment files, caches and stale downloaded pages.
+```sh
+python -m pip install playwright
+python -m playwright install chromium
+npm run test:browser
+```
 
-Domain verification, team review and badge issuance are distinct. No approval, whitelist allocation or top ranking is guaranteed.
+The browser suite uses explicitly mocked API fixtures **only inside the test context** to test counter-driven progression, stale/error behavior, input, pause, storage, mobile layout, and console errors. Release verification separately checks the real public feed and production-origin browser access. Test simulation is never substituted into production API requests.
 
-## Contracts (SqueekChain Sepolia, chainId 11155111)
+## Source layout and reproducibility
 
-| Contract | Address |
-|---|---|
-| Core | 0xfd6c166d4b8e2962e65746a13e5a0797cd4de0c4 |
-| Mining | 0x2dccb11fcc2defdd188555e45acb52231e82e218 |
-| Staking | 0x50fd1780526c3186a0c037c7622203bc4fb611ca |
-| SQK | 0xd78a3956cf63164d1fa1c622ad3c66623162fa1e |
-| SqueekNFT | 0xc4c7982657f00509548f3a3a41db7fa439a6856b |
+- `src/index.html`, `src/sprint.css`, `src/sprint.js`, `src/favicon.svg`, `src/README.md`: authored UI/game documentation.
+- Root `index.html`, `sprint.css`, `sprint.js`, `favicon.svg`, `README.md`: generated public copies; edit `src/`, then build.
+- `sprint-engine.js`: separately testable game state, work-counter rules and feed admission.
+- `docs/status.schema.json`: pinned official schema; explicit review is required for schema updates.
+- `tools/build-schema.cjs`: compiles the schema with Ajv 2020-12 + formats to `status-validator.js`; generated validator is served locally, no remote script dependency.
+- `tools/sync-site.cjs`: copies only allowlisted runtime/docs files into root and `site/`, verifying byte equality. It never copies sessions, wallet files, evidence, or `.env`.
+- `site/`: Vercel deployment root; `.vercelignore` excludes local configuration.
+- `tests/sprint-engine.test.cjs`, `tests/sprint.test.cjs`, `tests/sprint_browser.py`: deterministic game, deployment, and browser regression tests.
+- Existing `planner.html`, `genesis.html` and Python `tools/` are **legacy supplemental utilities**, not the submitted game. Their tests remain intact. CLI transaction/signing functions are intentionally disabled.
 
-squeekchain-project: 502c8855-e4e0-4067-bf83-d2de88597fa3
+## Safety, privacy, and limits
+
+Only the public status API is read by the game. No tracking library, wallet connection, private key, session token, or authentication credential is part of the frontend. Rendering uses textContent rather than HTML for live content. Audio and browser storage failures do not block practice. Background tabs automatically pause; resuming is explicit. Accessibility includes keyboard controls, visible focus, text status, touch alternatives, reduced-motion support, and labeled controls; the canvas itself is not a screen-reader-playable alternative.
+
+GitHub source, deployment files, and exact Genesis submission metadata must be kept aligned. **Deployment readiness is not Genesis approval**. No official badge is awarded by this app, and no reviewer outcome is promised.

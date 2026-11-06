@@ -175,7 +175,7 @@ class SiteBuildTests(unittest.TestCase):
             fake_path = pathlib.Path(tmp) / 'build_site.py'
             with contextlib.redirect_stdout(io.StringIO()):
                 exec(compile(source, str(fake_path), 'exec'), {'__file__': str(fake_path), '__name__': '__main__'})
-            html = fake_path.with_name('index.html').read_text(encoding='utf8')
+            html = fake_path.with_name('planner.html').read_text(encoding='utf8')
         self.assertIn('502c8855-e4e0-4067-bf83-d2de88597fa3', html)
         self.assertIn('Read-only Sepolia planner', html)
         self.assertIn('transaction execution disabled', html)
